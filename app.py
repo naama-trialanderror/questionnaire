@@ -294,7 +294,11 @@ st.markdown(
 st.html('<script>parent.document.querySelector("section.main").scrollTo(0, 0);</script>')
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
-os.makedirs(RESULTS_DIR, exist_ok=True)
+try:
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    _CAN_SAVE_FILES = True
+except OSError:
+    _CAN_SAVE_FILES = False
 
 # --- Session state defaults ---
 if "screen" not in st.session_state:
@@ -307,6 +311,8 @@ if "current_q_index" not in st.session_state:
     st.session_state.current_q_index = 0
 if "all_responses" not in st.session_state:
     st.session_state.all_responses = {}
+if "completed_sessions" not in st.session_state:
+    st.session_state.completed_sessions = []
 
 
 # ============================================================
@@ -314,11 +320,7 @@ if "all_responses" not in st.session_state:
 # ============================================================
 
 def save_session(client_number, all_responses):
-    """Save all questionnaire responses and computed scores to JSON."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{client_number}_{timestamp}.json"
-    filepath = os.path.join(RESULTS_DIR, filename)
-
+    """Build session data, store in session state, optionally save to disk."""
     session_data = {
         "client_number": client_number,
         "timestamp": datetime.now().isoformat(),
@@ -334,21 +336,47 @@ def save_session(client_number, all_responses):
             "results": results,
         }
 
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(session_data, f, ensure_ascii=False, indent=2)
+    # Always store in session state (works everywhere including cloud)
+    st.session_state.completed_sessions.append(session_data)
 
-    return filepath
+    # Try to save to disk (works locally / Docker, silently skipped on cloud)
+    if _CAN_SAVE_FILES:
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{client_number}_{timestamp}.json"
+            filepath = os.path.join(RESULTS_DIR, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(session_data, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    return session_data
 
 
 def load_all_sessions():
-    """Load all saved session files."""
+    """Load sessions from disk + session state (deduped by timestamp)."""
     sessions = []
-    for filepath in sorted(glob(os.path.join(RESULTS_DIR, "*.json")), reverse=True):
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            data["_filepath"] = filepath
-            data["_filename"] = os.path.basename(filepath)
-            sessions.append(data)
+    seen_timestamps = set()
+
+    # Load from disk (local / Docker)
+    if _CAN_SAVE_FILES:
+        for filepath in sorted(glob(os.path.join(RESULTS_DIR, "*.json")), reverse=True):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    data["_filepath"] = filepath
+                    data["_filename"] = os.path.basename(filepath)
+                    sessions.append(data)
+                    seen_timestamps.add(data.get("timestamp", ""))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    # Add in-memory sessions (cloud mode or current session)
+    for s in reversed(st.session_state.get("completed_sessions", [])):
+        if s.get("timestamp", "") not in seen_timestamps:
+            sessions.insert(0, s)
+            seen_timestamps.add(s.get("timestamp", ""))
+
     return sessions
 
 
@@ -1663,29 +1691,72 @@ def screen_client():
 
 
 def screen_submit():
-    """Save results and show thank-you."""
+    """Save results and show thank-you with download options."""
     # Save only once
     if "session_saved" not in st.session_state or not st.session_state.session_saved:
-        save_session(st.session_state.client_number, st.session_state.all_responses)
+        session_data = save_session(
+            st.session_state.client_number, st.session_state.all_responses
+        )
         st.session_state.session_saved = True
+        st.session_state.last_session = session_data
 
     st.markdown(
         '<div class="thank-you">'
-        "<h1>✓ תודה רבה!</h1>"
-        "<p>התשובות נשמרו בהצלחה.</p>"
+        "<h1>תודה רבה</h1>"
+        "<p>התשובות נקלטו בהצלחה.</p>"
         "<p>ניתן להעביר את המכשיר בחזרה למטפל/ת.</p>"
         "</div>",
         unsafe_allow_html=True,
     )
 
-    st.divider()
+    # Download buttons for the therapist
+    session_data = st.session_state.get("last_session")
+    if session_data:
+        st.markdown("---")
+        st.markdown("##### הורדת תוצאות")
+        client_id = session_data.get("client_number", "")
+        ts = session_data.get("timestamp", "")
+        try:
+            dt = datetime.fromisoformat(ts)
+            date_str = dt.strftime("%d-%m-%Y_%H%M")
+        except (ValueError, TypeError):
+            date_str = "session"
 
-    if st.button("חזרה למסך מטפל", use_container_width=True):
-        st.session_state.screen = "setup"
-        st.session_state.session_saved = False
-        st.session_state.all_responses = {}
-        st.session_state.current_q_index = 0
-        st.rerun()
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            csv_bytes = _export_session_csv(session_data)
+            st.download_button(
+                label="CSV הורדת",
+                data=csv_bytes,
+                file_name=f"{client_id}_{date_str}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with dl_col2:
+            pdf_bytes = _export_session_pdf(session_data)
+            st.download_button(
+                label="PDF הורדת",
+                data=pdf_bytes,
+                file_name=f"{client_id}_{date_str}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("חזרה למסך מטפל", use_container_width=True):
+            st.session_state.screen = "setup"
+            st.session_state.session_saved = False
+            st.session_state.all_responses = {}
+            st.session_state.current_q_index = 0
+            st.rerun()
+    with col2:
+        if st.button("לוח בקרה", use_container_width=True):
+            st.session_state.screen = "dashboard"
+            st.session_state.session_saved = False
+            st.rerun()
 
 
 # ============================================================
