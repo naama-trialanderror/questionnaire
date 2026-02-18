@@ -1,0 +1,8 @@
+results/
+__pycache__/
+*.pdf
+.git/
+.claude/
+explore*.py
+dump_pages.py
+.DS_Store
