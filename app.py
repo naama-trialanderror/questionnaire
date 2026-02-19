@@ -1852,13 +1852,23 @@ def _export_session_csv(session):
     return buf.getvalue().encode("utf-8-sig")  # BOM for Excel Hebrew support
 
 
+def _hex_to_rgb(hex_color):
+    """Convert '#rrggbb' to (r, g, b) tuple."""
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
 def _export_session_pdf(session):
-    """Export a session to PDF bytes with Hebrew support."""
+    """Export a session to a visually rich PDF matching the dashboard view."""
     pdf = FPDF()
     pdf.add_font("Heb", "", _HEBREW_FONT_PATH)
     pdf.add_font("Heb", "B", _HEBREW_FONT_PATH)
     pdf.set_text_shaping(use_shaping_engine=True)
     pdf.set_auto_page_break(auto=True, margin=20)
+
+    PAGE_W = 190  # usable width (A4 - margins)
+    BAR_W = 30    # width of the visual bar
+    LH = 5        # line height
 
     def _w(text, size=10, bold=False, align="R"):
         pdf.set_font("Heb", "B" if bold else "", size)
@@ -1869,7 +1879,76 @@ def _export_session_pdf(session):
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
         pdf.ln(3)
 
-    # Title page
+    def _colored_header(text, hex_color):
+        """Draw a colored subscale header bar."""
+        r, g, b = _hex_to_rgb(hex_color)
+        y = pdf.get_y()
+        pdf.set_fill_color(r, g, b)
+        pdf.rect(10, y, PAGE_W, 7, "F")
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Heb", "B", 9)
+        pdf.set_xy(10, y + 0.5)
+        pdf.cell(PAGE_W, 6, text, align="R")
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_y(y + 8)
+
+    def _item_row(num, text, val, scale_min, scale_max, hex_color, is_rev=False, is_high=False):
+        """Draw a single item row with visual bar."""
+        if pdf.get_y() > 270:
+            pdf.add_page()
+        y = pdf.get_y()
+
+        # Background for high items
+        if is_high:
+            pdf.set_fill_color(254, 242, 242)
+            pdf.rect(10, y, PAGE_W, LH + 1, "F")
+        else:
+            pdf.set_fill_color(250, 251, 252)
+            pdf.rect(10, y, PAGE_W, LH + 1, "F")
+
+        # Item number
+        pdf.set_font("Heb", "B", 7)
+        pdf.set_text_color(100, 100, 100)
+        pdf.set_xy(10, y)
+        pdf.cell(8, LH, f"{num}.", align="R")
+
+        # Item text (truncated)
+        pdf.set_font("Heb", "", 7)
+        pdf.set_text_color(50, 50, 50)
+        pdf.set_xy(18, y)
+        display_text = text[:70]
+        if is_rev:
+            display_text += "  [הפוך]"
+        pdf.cell(PAGE_W - BAR_W - 30, LH, display_text, align="R")
+
+        # Value badge
+        r, g, b = _hex_to_rgb(hex_color)
+        pdf.set_fill_color(r, g, b)
+        val_str = str(val) if val is not None else "—"
+        badge_x = PAGE_W - BAR_W - 5
+        pdf.set_xy(badge_x, y)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Heb", "B", 7)
+        pdf.cell(12, LH, val_str, align="C", fill=True)
+
+        # Visual bar
+        if val is not None and scale_max > scale_min:
+            pct = (val - scale_min) / (scale_max - scale_min)
+            bar_x = badge_x + 14
+            # Background bar
+            pdf.set_fill_color(232, 232, 240)
+            pdf.rect(bar_x, y + 1.5, BAR_W, 2, "F")
+            # Fill bar
+            bar_color = _severity_bar_color(val, scale_min, scale_max,
+                                            (scale_min + scale_max) / 2)
+            cr, cg, cb = _hex_to_rgb(bar_color)
+            pdf.set_fill_color(cr, cg, cb)
+            pdf.rect(bar_x, y + 1.5, BAR_W * pct, 2, "F")
+
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_y(y + LH + 1)
+
+    # ---- Title page ----
     pdf.add_page()
     _w("דוח תוצאות שאלונים", size=20, bold=True)
     pdf.ln(4)
@@ -1883,30 +1962,39 @@ def _export_session_pdf(session):
         date_str = ts
     _w(f"מטופל: {client}     תאריך: {date_str}", size=11)
     _line()
-    pdf.ln(4)
+    pdf.ln(2)
 
+    # ---- Per-questionnaire ----
     for q_code, q_data in session.get("questionnaires", {}).items():
         q_name = q_data.get("name", q_code)
         results = q_data.get("results", {})
         raw = q_data.get("raw_responses", {})
 
-        # Check if enough space for header, otherwise new page
-        if pdf.get_y() > 240:
+        # Find module
+        q_module = None
+        for qm in ALL_QUESTIONNAIRES.values():
+            if qm["code"] == q_code:
+                q_module = qm
+                break
+
+        # New page for each questionnaire
+        if pdf.get_y() > 60:
             pdf.add_page()
 
+        # ---- Questionnaire title ----
         _w(f"{q_code} — {q_name}", size=14, bold=True)
-        pdf.ln(2)
+        pdf.ln(1)
 
-        # Score summary
+        # ---- Score summary ----
         if "total" in results:
-            score_range = results.get("score_range", "")
-            _w(f"ציון כללי: {results['total']}  (טווח: {score_range})", size=11)
+            _w(f"ציון כללי: {results['total']}  (טווח: {results.get('score_range', '')})", size=11)
         if "total_endorsed" in results:
             _w(f"פריטים מאושרים: {results['total_endorsed']}", size=11)
         if "total_distress" in results:
             _w(f"ציון מצוקה: {results['total_distress']}", size=11)
         if "ideation_level" in results:
-            _w(f"רמת מחשבות אובדניות: {results['ideation_level']}/5", size=11)
+            _w(f"רמת מחשבות אובדניות: {results['ideation_level']}/5 — "
+               f"{results.get('ideation_description', '')}", size=11)
         if "total_mean" in results:
             _w(f"ציון ממוצע: {results['total_mean']}", size=11)
         if "total_score" in results:
@@ -1915,14 +2003,13 @@ def _export_session_pdf(session):
         if "severity" in results:
             _w(f"רמת חומרה: {results['severity']}", size=11, bold=True)
         if "interpretation" in results:
-            pdf.ln(1)
             _w(f"פירוש: {results['interpretation']}", size=9)
         if "clinical_note" in results:
             _w(f"הערה קלינית: {results['clinical_note']}", size=9, bold=True)
         if "behavior_summary" in results:
             _w(f"התנהגות: {results['behavior_summary']}", size=9)
 
-        # Subscales
+        # ---- Subscale scores summary ----
         subscales = results.get("subscales", {})
         if subscales:
             pdf.ln(1)
@@ -1935,7 +2022,6 @@ def _export_session_pdf(session):
                 else:
                     _w(f"  {sub_name}: {sub_val}", size=9)
 
-        # Clusters (PCL-5)
         clusters = results.get("clusters", {})
         if clusters:
             pdf.ln(1)
@@ -1944,29 +2030,131 @@ def _export_session_pdf(session):
                 _w(f"  {ckey} — {cdata.get('name', '')}: "
                    f"{cdata.get('score', '')}/{cdata.get('max', '')}", size=9)
 
-        # Item responses table
-        q_module = None
-        for qm in ALL_QUESTIONNAIRES.values():
-            if qm["code"] == q_code:
-                q_module = qm
-                break
-
+        # ---- Visual item view grouped by subscale ----
         if q_module:
-            pdf.ln(2)
-            _w("תשובות:", size=10, bold=True)
-            scale_labels = q_module.get("scale_labels", {})
-            for item in q_module["items"]:
-                num = item["number"]
-                val = raw.get(str(num), "—")
-                try:
-                    label = scale_labels.get(int(val), "")
-                except (ValueError, TypeError):
-                    label = ""
-                text = item["text"][:80]
-                _w(f"  {num}. {text}  [{val}] {label}", size=8)
+            pdf.ln(3)
+            _w("תצוגת פריטים מלאה:", size=10, bold=True)
+            pdf.ln(1)
+
+            items = q_module["items"]
+            scale_min = q_module["scale_min"]
+            scale_max = q_module["scale_max"]
+            reversed_items = set(q_module["reversed_items"])
+            mid = (scale_min + scale_max) / 2
+
+            subscale_map, subscale_order = _get_subscale_map(q_module)
+
+            if subscale_map and subscale_order:
+                # Grouped by subscale
+                assigned = set()
+                for sub_name, sub_color in subscale_order:
+                    sub_items = [it for it in items
+                                 if it["number"] in subscale_map
+                                 and subscale_map[it["number"]][0] == sub_name]
+                    if not sub_items:
+                        continue
+                    if pdf.get_y() > 260:
+                        pdf.add_page()
+                    _colored_header(sub_name, sub_color)
+                    for item in sub_items:
+                        num = item["number"]
+                        val_raw = raw.get(str(num))
+                        try:
+                            val = int(val_raw) if val_raw is not None else None
+                        except (ValueError, TypeError):
+                            val = None
+                        is_rev = num in reversed_items
+                        effective = (scale_max - val + scale_min) if (is_rev and val is not None) else val
+                        is_high = (effective is not None and effective > mid)
+                        _item_row(num, item["text"], val, scale_min, scale_max,
+                                  sub_color, is_rev, is_high)
+                        assigned.add(num)
+
+                # Unassigned items
+                unassigned = [it for it in items if it["number"] not in assigned]
+                if unassigned:
+                    _colored_header("כללי", "#888888")
+                    for item in unassigned:
+                        num = item["number"]
+                        val_raw = raw.get(str(num))
+                        try:
+                            val = int(val_raw) if val_raw is not None else None
+                        except (ValueError, TypeError):
+                            val = None
+                        is_rev = num in reversed_items
+                        effective = (scale_max - val + scale_min) if (is_rev and val is not None) else val
+                        is_high = (effective is not None and effective > mid)
+                        _item_row(num, item["text"], val, scale_min, scale_max,
+                                  "#888888", is_rev, is_high)
+            else:
+                # No subscales — flat list with section grouping
+                current_section = None
+                for item in items:
+                    if "section" in item and item["section"] != current_section:
+                        current_section = item["section"]
+                        if pdf.get_y() > 260:
+                            pdf.add_page()
+                        _colored_header(current_section, "#4a90d9")
+                    num = item["number"]
+                    val_raw = raw.get(str(num))
+                    try:
+                        val = int(val_raw) if val_raw is not None else None
+                    except (ValueError, TypeError):
+                        val = None
+                    is_rev = num in reversed_items
+                    effective = (scale_max - val + scale_min) if (is_rev and val is not None) else val
+                    is_high = (effective is not None and effective > mid)
+                    _item_row(num, item["text"], val, scale_min, scale_max,
+                              "#4a90d9", is_rev, is_high)
+
+            # PQ-B distress
+            if q_module.get("has_distress_followup"):
+                endorsed = [(it, raw.get(f"{it['number']}_distress"))
+                            for it in items if raw.get(str(it["number"])) in (1, "1")]
+                if endorsed:
+                    pdf.ln(2)
+                    _colored_header("פריטים שאושרו — דירוג מצוקה", "#e74c3c")
+                    d_labels = q_module.get("distress_scale_labels", {})
+                    for item, d_val in endorsed:
+                        d_int = None
+                        try:
+                            d_int = int(d_val) if d_val is not None else None
+                        except (ValueError, TypeError):
+                            pass
+                        d_text = f"{item['text']}  [מצוקה: {d_int or '—'}]"
+                        _item_row(item["number"], d_text, d_int, 1, 5,
+                                  "#e74c3c", is_high=True)
+
+            # EAT-26 behavioral
+            if q_module.get("behavioral_items"):
+                pdf.ln(2)
+                _colored_header("התנהגויות בששת החודשים האחרונים", "#c0392b")
+                b_labels = q_module.get("behavioral_scale_labels", {})
+                for bitem in q_module["behavioral_items"]:
+                    bnum = bitem["number"]
+                    bval_raw = raw.get(str(bnum))
+                    try:
+                        bval = int(bval_raw) if bval_raw is not None else None
+                    except (ValueError, TypeError):
+                        bval = None
+                    _item_row(bnum, bitem["text"], bval, 0, 5,
+                              "#c0392b", is_high=(bval is not None and bval >= 1))
+
+            # C-SSRS intensity
+            if q_module.get("intensity_items"):
+                intensity = results.get("intensity", {})
+                if intensity:
+                    pdf.ln(2)
+                    _colored_header("עוצמת המחשבות האובדניות", "#8e44ad")
+                    for iitem in q_module["intensity_items"]:
+                        inum = iitem["number"]
+                        idata = intensity.get(inum)
+                        if idata:
+                            _item_row(inum, idata["label"], idata["value"], 1, 5,
+                                      "#8e44ad", is_high=True)
 
         _line()
-        pdf.ln(3)
+        pdf.ln(2)
 
     return bytes(pdf.output())
 
