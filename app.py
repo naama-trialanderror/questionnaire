@@ -527,6 +527,296 @@ def render_questionnaire_client(q, q_key):
     return responses, all_answered
 
 
+def render_questionnaire_clinician(q, q_key):
+    """Render C-SSRS (and any clinician_mode questionnaire) as a guided clinician interview.
+
+    Returns (responses, all_answered) matching the render_questionnaire_client signature.
+    """
+    from questionnaires.cssrs import LETHALITY_LABELS, LETHALITY_POTENTIAL_LABELS
+
+    st.markdown(
+        '<div style="background:#fde8e8;border:2px solid #e74c3c;border-radius:10px;'
+        'padding:0.8rem 1rem;margin-bottom:1rem;">'
+        '⚕️ <strong>ראיון מאבחן</strong> — אין להחתים את הנבדק/ת על טופס זה. '
+        'המאבחן/ת מנהל/ת את הראיון ומתעד/ת את התשובות.</div>',
+        unsafe_allow_html=True,
+    )
+
+    responses = {}
+
+    # ── Context ─────────────────────────────────────────────────────
+    col_src, col_mon = st.columns(2)
+    with col_src:
+        source = st.selectbox(
+            "מקור מידע",
+            ["ראיון עם הנבדק/ת", "בני/ות משפחה", "שניהם — נבדק/ת ומשפחה", "מקור אחר"],
+            key=f"clinician_{q_key}_source",
+        )
+        responses["source"] = source
+    with col_mon:
+        months = st.number_input(
+            "תקופת הייחוס (חודשים)",
+            min_value=1, max_value=24, value=1, step=1,
+            key=f"clinician_{q_key}_months",
+        )
+        responses["months"] = int(months)
+
+    st.info(
+        "השאלות הן **הצעות לגישוש בלבד** — ניתן להתאים את הניסוח כל עוד "
+        "מוערכים כל סוגי המחשבות וההתנהגויות."
+    )
+
+    # Helper: render a single Yes/No item with two columns (recent | lifetime)
+    def _render_yn_item(num, item, months_val):
+        """Render one Yes/No item with guidance expander and two timeframe columns."""
+        label_recent = f"ב-{months_val} חודשים האחרונים"
+        label_lifetime = "במהלך החיים"
+
+        guidance = item.get("guidance", "")
+        item_name = item["text"]
+
+        st.markdown(f"**{num}. {item_name}**")
+        if guidance:
+            with st.expander("הגדרה קלינית ושאלות מוצעות"):
+                st.markdown(guidance)
+
+        col_r, col_l = st.columns(2)
+        with col_r:
+            st.markdown(f"*{label_recent}*")
+            val_r = st.radio(
+                f"recent_{num}",
+                options=[0, 1],
+                format_func=lambda x: "כן" if x == 1 else "לא",
+                key=f"clinician_{q_key}_{num}_r",
+                index=None,
+                label_visibility="collapsed",
+                horizontal=True,
+            )
+        with col_l:
+            st.markdown(f"*{label_lifetime}*")
+            val_l = st.radio(
+                f"lifetime_{num}",
+                options=[0, 1],
+                format_func=lambda x: "כן" if x == 1 else "לא",
+                key=f"clinician_{q_key}_{num}_l",
+                index=None,
+                label_visibility="collapsed",
+                horizontal=True,
+            )
+        return val_r, val_l
+
+    # ── PART A: Suicidal Ideation ────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div class="subscale-header" style="background-color:#c0392b;">'
+        'חלק א׳ — מחשבות אובדניות</div>',
+        unsafe_allow_html=True,
+    )
+    st.warning(
+        "**זרימת הראיון:** שאל/י שאלות 1-2 תחילה.\n\n"
+        "• אם **שתיהן שליליות** (לאחרונה) ← עבור/י לחלק ב׳ (התנהגות).\n\n"
+        "• אם **אחת חיובית** ← המשך/י לשאלות 3-4-5."
+    )
+
+    items_by_num = {item["number"]: item for item in q["items"]}
+
+    # Items 1-2
+    val_1r, val_1l = _render_yn_item(1, items_by_num[1], months)
+    if val_1r is not None:
+        responses[1] = val_1r
+    if val_1l is not None:
+        responses["1_l"] = val_1l
+
+    val_2r, val_2l = _render_yn_item(2, items_by_num[2], months)
+    if val_2r is not None:
+        responses[2] = val_2r
+    if val_2l is not None:
+        responses["2_l"] = val_2l
+
+    # Branching logic
+    any_ideation_12_r = responses.get(1, 0) == 1 or responses.get(2, 0) == 1
+    any_ideation_12_l = responses.get("1_l", 0) == 1 or responses.get("2_l", 0) == 1
+    show_345 = any_ideation_12_r or any_ideation_12_l
+
+    both_1_2_answered_r = (val_1r is not None) and (val_2r is not None)
+    if both_1_2_answered_r and not any_ideation_12_r:
+        st.info("שתי השאלות שליליות (לאחרונה) → ניתן לעבור לחלק ב׳ — התנהגות אובדנית.")
+
+    # Items 3-5 (conditional)
+    if show_345:
+        st.markdown(
+            '<div class="subscale-header" style="background-color:#e74c3c;opacity:0.85;">'
+            'הערכת חומרת החשיבה (שאלות 3-5)</div>',
+            unsafe_allow_html=True,
+        )
+        for num in [3, 4, 5]:
+            vr, vl = _render_yn_item(num, items_by_num[num], months)
+            if vr is not None:
+                responses[num] = vr
+            if vl is not None:
+                responses[f"{num}_l"] = vl
+
+    # ── Intensity ────────────────────────────────────────────────────
+    any_ideation_r = any(responses.get(i, 0) == 1 for i in [1, 2, 3, 4, 5])
+    any_ideation_l = any(responses.get(f"{i}_l", 0) == 1 for i in [1, 2, 3, 4, 5])
+
+    if any_ideation_r or any_ideation_l:
+        st.markdown("---")
+        st.markdown(
+            '<div class="subscale-header" style="background-color:#8e44ad;">'
+            'עוצמת המחשבות האובדניות</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "*העריך/י לגבי **סוג המחשבות החמורות ביותר** שהיו לאדם — "
+            "בתקופה האחרונה ובמהלך החיים:*"
+        )
+
+        for iitem in q["intensity_items"]:
+            inum = iitem["number"]
+            guidance = iitem.get("guidance", "")
+            st.markdown(f"**{iitem['text']}**")
+            if guidance:
+                st.caption(guidance)
+
+            i_options = sorted(iitem["labels"].keys())
+            i_fmt = lambda x, lb=iitem["labels"]: f"{x} — {lb[x]}"
+
+            col_r, col_l = st.columns(2)
+            with col_r:
+                st.markdown(f"*ב-{months} חודשים*")
+                val_ir = st.radio(
+                    f"intensity_r_{inum}",
+                    options=i_options,
+                    format_func=i_fmt,
+                    key=f"clinician_{q_key}_{inum}_r",
+                    index=None,
+                    label_visibility="collapsed",
+                )
+                if val_ir is not None:
+                    responses[inum] = val_ir
+            with col_l:
+                st.markdown("*במהלך החיים*")
+                val_il = st.radio(
+                    f"intensity_l_{inum}",
+                    options=i_options,
+                    format_func=i_fmt,
+                    key=f"clinician_{q_key}_{inum}_l",
+                    index=None,
+                    label_visibility="collapsed",
+                )
+                if val_il is not None:
+                    responses[f"{inum}_l"] = val_il
+
+    # ── PART B: Suicidal Behavior ────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div class="subscale-header" style="background-color:#2980b9;">'
+        'חלק ב׳ — התנהגות אובדנית</div>',
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "הערך/י את **כל** סוגי ההתנהגות האובדנית, ללא קשר לתשובות חלק א׳. "
+        "חובה לשאול על כל הסוגים."
+    )
+
+    behavior_items = [item for item in q["items"] if item["number"] >= 6]
+
+    for item in behavior_items:
+        num = item["number"]
+        vr, vl = _render_yn_item(num, item, months)
+        if vr is not None:
+            responses[num] = vr
+        if vl is not None:
+            responses[f"{num}_l"] = vl
+
+        # Attempt counts (items 6-9)
+        if num <= 9:
+            show_count_r = responses.get(num, 0) == 1
+            show_count_l = responses.get(f"{num}_l", 0) == 1
+            if show_count_r or show_count_l:
+                cnt_col_r, cnt_col_l = st.columns(2)
+                with cnt_col_r:
+                    if show_count_r:
+                        cnt_r = st.number_input(
+                            f"מספר אירועים (ב-{months} חודשים)",
+                            min_value=1, max_value=100, value=1, step=1,
+                            key=f"clinician_{q_key}_{num}_count_r",
+                        )
+                        responses[f"{num}_count"] = int(cnt_r)
+                with cnt_col_l:
+                    if show_count_l:
+                        cnt_l = st.number_input(
+                            "מספר אירועים (כל החיים)",
+                            min_value=1, max_value=100, value=1, step=1,
+                            key=f"clinician_{q_key}_{num}_count_l",
+                        )
+                        responses[f"{num}_count_l"] = int(cnt_l)
+
+        # Lethality rating (item 6 only)
+        if num == 6 and (responses.get(6, 0) == 1 or responses.get("6_l", 0) == 1):
+            st.markdown("**דירוג תוצאה קטלנית / נזק רפואי (0-5):**")
+            leth_labels = q.get("lethality_labels", LETHALITY_LABELS)
+            leth_options = sorted(leth_labels.keys())
+            lethality = st.radio(
+                "lethality_rating",
+                options=leth_options,
+                format_func=lambda x, ll=leth_labels: ll[x],
+                key=f"clinician_{q_key}_lethality",
+                index=None,
+                label_visibility="collapsed",
+            )
+            if lethality is not None:
+                responses["lethality"] = lethality
+                if lethality == 0:
+                    st.markdown("**פוטנציאל קטלני (0-2) — מכיוון שנזק = 0:**")
+                    pot_labels = q.get("lethality_potential_labels", LETHALITY_POTENTIAL_LABELS)
+                    pot_options = sorted(pot_labels.keys())
+                    leth_pot = st.radio(
+                        "lethality_potential",
+                        options=pot_options,
+                        format_func=lambda x, pl=pot_labels: pl[x],
+                        key=f"clinician_{q_key}_lethality_potential",
+                        index=None,
+                        label_visibility="collapsed",
+                    )
+                    if leth_pot is not None:
+                        responses["lethality_potential"] = leth_pot
+
+        st.markdown("")  # spacer
+
+    # ── Compute all_answered ─────────────────────────────────────────
+    all_answered = True
+
+    # Items 1-2: required in both timeframes
+    for num in [1, 2]:
+        if responses.get(num) is None or responses.get(f"{num}_l") is None:
+            all_answered = False
+
+    # Items 3-5: required only if any ideation in 1-2
+    if show_345:
+        for num in [3, 4, 5]:
+            if responses.get(num) is None or responses.get(f"{num}_l") is None:
+                all_answered = False
+
+    # Intensity: required when ideation is present
+    if any_ideation_r:
+        for iitem in q["intensity_items"]:
+            if responses.get(iitem["number"]) is None:
+                all_answered = False
+    if any_ideation_l:
+        for iitem in q["intensity_items"]:
+            if responses.get(f"{iitem['number']}_l") is None:
+                all_answered = False
+
+    # Behavior items 6-10: required in both timeframes
+    for num in [6, 7, 8, 9, 10]:
+        if responses.get(num) is None or responses.get(f"{num}_l") is None:
+            all_answered = False
+
+    return responses, all_answered
+
+
 # Subscale color palette for visual grouping
 SUBSCALE_COLORS = [
     "#4a90d9", "#9b59b6", "#e67e22", "#27ae60", "#e74c3c",
@@ -547,6 +837,7 @@ def _get_subscale_map(q_module):
         "MHC-SF": "mhc_sf", "DASS-21": "dass21", "TTBQ2-CG31": "ttbq2_cg31",
         "PCL-5": "pcl5", "PTGI": "ptgi", "ITQ": "itq", "OCI-R": "oci_r",
         "TAS-20": "tas20", "EAT-26": "eat26", "IRI": "iri", "DERS": "ders",
+        "AQ": "aq",
     }.get(code)
     if not mod_name:
         return None, None
@@ -835,34 +1126,93 @@ def render_dashboard_results(q_code, q_data):
     st.markdown("### ציונים מחושבים")
 
     if q_code == "C-SSRS":
-        # C-SSRS: ideation level + behavior summary
-        ideation = results.get("ideation_level", 0)
-        ideation_desc = results.get("ideation_description", "")
+        # ── Context ──
+        months = results.get("months", 1)
+        source = results.get("source", "")
+        if source:
+            st.markdown(f"**מקור מידע:** {source} | **תקופת ייחוס:** {months} חודשים")
+
         severity = results.get("severity", "")
         severity_class = "severe-box" if severity in ("קריטי", "חמור") else \
                          "warning-box" if severity in ("בינוני-חמור", "בינוני") else "results-box"
+
+        # ── Recent period ──
+        st.markdown(f"#### תקופה אחרונה (ב-{months} חודשים)")
+        ideation = results.get("ideation_level", 0)
+        ideation_desc = results.get("ideation_description", "")
         st.markdown(
             f'<div class="{severity_class}">'
-            f'<strong>רמת מחשבות אובדניות:</strong> {ideation}/5 — {ideation_desc}'
+            f'<strong>רמת חשיבה אובדנית:</strong> {ideation}/5 — {ideation_desc}'
             f'</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
             f'<div class="{severity_class}">'
-            f'<strong>התנהגות אובדנית:</strong> {results.get("behavior_summary", "")}'
+            f'<strong>התנהגות אובדנית:</strong> {results.get("behavior_summary", "לא דווח")}'
             f'</div>',
             unsafe_allow_html=True,
         )
-        if "score_range" in results:
-            st.markdown(f"**טווח:** {results['score_range']}")
-        # Intensity ratings
+        cnt_r = results.get("attempt_count_recent")
+        if cnt_r:
+            st.markdown(f"**מספר ניסיונות (לאחרונה):** {cnt_r}")
+
+        # ── Lifetime ──
+        st.markdown("#### במהלך החיים")
+        ideation_l = results.get("ideation_level_lifetime", 0)
+        ideation_desc_l = results.get("ideation_description_lifetime", "לא דווח")
+        sev_class_l = "severe-box" if ideation_l >= 4 else \
+                      "warning-box" if ideation_l >= 2 else "results-box"
+        st.markdown(
+            f'<div class="{sev_class_l}">'
+            f'<strong>רמת חשיבה אובדנית (חיים):</strong> {ideation_l}/5 — {ideation_desc_l}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="{sev_class_l}">'
+            f'<strong>התנהגות אובדנית (חיים):</strong> {results.get("behavior_summary_lifetime", "לא דווח")}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        cnt_l = results.get("attempt_count_lifetime")
+        if cnt_l:
+            st.markdown(f"**מספר ניסיונות (כל החיים):** {cnt_l}")
+
+        # ── Lethality ──
+        if results.get("lethality") is not None:
+            leth_desc = results.get("lethality_description", str(results["lethality"]))
+            st.markdown(
+                f'<div class="warning-box">'
+                f'<strong>תוצאה קטלנית / נזק רפואי:</strong> {results["lethality"]}/5 — {leth_desc}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        if results.get("lethality_potential") is not None:
+            pot_desc = results.get("lethality_potential_description", str(results["lethality_potential"]))
+            st.markdown(
+                f'<div class="warning-box">'
+                f'<strong>פוטנציאל קטלני:</strong> {results["lethality_potential"]}/2 — {pot_desc}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Intensity (recent) ──
         intensity = results.get("intensity", {})
         if intensity:
-            st.markdown("**עוצמת המחשבות (רמה הגבוהה ביותר שדווחה):**")
+            st.markdown(f"**עוצמת מחשבות — ב-{months} חודשים:**")
             for ikey, idata in intensity.items():
                 st.markdown(f"- **{idata['label']}:** {idata['value']}/5 — {idata['description']}")
             itotal = results.get("intensity_total", 0)
-            st.metric(label="ציון עוצמה כולל (טווח: 5-25)", value=itotal)
+            st.metric(label="ציון עוצמה כולל — לאחרונה (5-25)", value=itotal)
+
+        # ── Intensity (lifetime) ──
+        intensity_l = results.get("intensity_lifetime", {})
+        if intensity_l:
+            st.markdown("**עוצמת מחשבות — במהלך החיים:**")
+            for ikey, idata in intensity_l.items():
+                st.markdown(f"- **{idata['label']}:** {idata['value']}/5 — {idata['description']}")
+            itotal_l = results.get("intensity_total_lifetime", 0)
+            st.metric(label="ציון עוצמה כולל — חיים (5-25)", value=itotal_l)
 
     elif q_code == "TTBQ2-CG31":
         # TTBQ2-CG31: subscale means
@@ -1118,6 +1468,63 @@ def render_dashboard_results(q_code, q_data):
                     f"- **{sub_data['label']} ({sub_code}):** "
                     f"{sub_data['score']} (טווח: {sub_data['range']})"
                 )
+
+    elif q_code == "AQ":
+        # AQ: total binary score + cutoff comparison + subscale breakdown
+        total = results.get("total", 0)
+        severity = results.get("severity", "")
+        severity_class = (
+            "severe-box" if severity in ("גבוה מאוד", "מעל סף בינלאומי", "מעל סף קליני ישראלי")
+            else "warning-box" if severity == "בינוני"
+            else "results-box"
+        )
+        st.metric(label="ציון כולל בינארי (טווח: 0–50)", value=total)
+        st.markdown(
+            f'<div class="{severity_class}">'
+            f'<strong>רמת חומרה:</strong> {severity}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Cutoff comparison — all three validation studies
+        st.markdown("**השוואה לציוני סף:**")
+        for cutoff_name, threshold in [
+            ("ישראל — Golan & Milua (2006)", 22),
+            ("יפן / אנגליה — Kurita et al. (2005); Woodbury-Smith et al. (2005)", 26),
+            ("UK מקורי — Baron-Cohen et al. (2001)", 32),
+        ]:
+            above = total >= threshold
+            box_class = "warning-box" if above else "results-box"
+            status = "✓ מעל הסף" if above else "✗ מתחת לסף"
+            st.markdown(
+                f'<div class="{box_class}">'
+                f'{cutoff_name} (≥{threshold}): <strong>{status}</strong>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # Subscale scores — 5 subscales, max 10 each
+        subscales = results.get("subscales", {})
+        if subscales:
+            st.markdown("**תת-סולמות (0–10 כל אחד):**")
+            cols = st.columns(len(subscales))
+            for col, (sub_name, sub_data) in zip(cols, subscales.items()):
+                with col:
+                    st.metric(label=sub_name, value=f"{sub_data['score']}/10")
+
+            # Per-subscale binary scores for traceability
+            binary_scores = results.get("binary_scores", {})
+            if binary_scores:
+                with st.expander("ציונים בינאריים לפי תת-סולם (לאימות)", expanded=False):
+                    for sub_name, sub_data in subscales.items():
+                        item_strs = [
+                            f"פריט {n}: {binary_scores.get(n, '?')}"
+                            for n in sub_data.get("items", [])
+                        ]
+                        st.markdown(
+                            f"**{sub_name}** (סכום: {sub_data['score']}/10)  \n"
+                            + " | ".join(item_strs)
+                        )
 
     elif "subscales" in results and isinstance(list(results["subscales"].values())[0], dict):
         # DASS-21 style
@@ -1469,15 +1876,27 @@ def render_dashboard_results(q_code, q_data):
 """)
     elif q_code == "AQ":
         st.markdown("""
-**שיטת ציון:** 50 פריטים, סולם 1-4 (מסכים בהחלט, מסכים, לא מסכים, לא מסכים בהחלט). **ציון בינארי:** כל פריט מקבל 0 או 1 בהתאם לכיוון "אוטיסטי". טווח: 0-50.
+**שיטת ציון:** 50 פריטים, סולם 1-4 (מסכים בהחלט, מסכים במקצת, לא מסכים במקצת, לא מסכים כלל). **ציון בינארי:** כל פריט מקבל 0 או 1 בהתאם לכיוון "אוטיסטי". טווח: 0–50.
 
-**חלוקה לפריטים:**
-- בפריטי "הסכמה" (תשובת "מסכים"/"מסכים בהחלט" = 1 נקודה): פריטים שבהם הסכמה מעידה על מאפיין אוטיסטי.
-- בפריטי "אי-הסכמה" (תשובת "לא מסכים"/"לא מסכים בהחלט" = 1 נקודה): פריטים שבהם אי-הסכמה מעידה על מאפיין אוטיסטי.
+**כיוון ציון:**
+- פריטי **הסכמה** (24 פריטים): הסכמה ("מסכים בהחלט"/"מסכים במקצת") = 1 נקודה — מאפיין אוטיסטי מתבטא בהסכמה.
+- פריטי **אי-הסכמה** (26 פריטים): אי-הסכמה ("לא מסכים במקצת"/"לא מסכים כלל") = 1 נקודה — מאפיין אוטיסטי מתבטא בשלילה.
 
-**נקודת חתך (ישראלית):** ציון **22 ומעלה** (Lugo-Marín et al., 2019). נקודת החתך המקורית (Baron-Cohen): 32 ומעלה.
+**5 תת-סולמות (10 פריטים כל אחד, ציון מקסימלי 10):**
+- **מיומנויות חברתיות** (פריטים 1, 11, 13, 15, 22, 36, 44, 45, 47, 48)
+- **הטיית/שינוי קשב** (פריטים 2, 4, 10, 16, 25, 32, 34, 37, 43, 46)
+- **קשב לפרטים** (פריטים 5, 6, 9, 12, 19, 23, 28, 29, 30, 49)
+- **תקשורת** (פריטים 7, 17, 18, 26, 27, 31, 33, 35, 38, 39)
+- **דמיון** (פריטים 3, 8, 14, 20, 21, 24, 40, 41, 42, 50)
 
-**הפניה:** Baron-Cohen et al. (2001). The Autism-Spectrum Quotient (AQ).
+**ציוני סף:**
+| מחקר | סף | הערה |
+|---|---|---|
+| ישראל — Golan & Milua (2006) | ≥22 | רגישות 0.73, ספציפיות 0.82 |
+| יפן / אנגליה — Kurita et al. (2005); Woodbury-Smith et al. (2005) | ≥26 | |
+| UK מקורי — Baron-Cohen et al. (2001) | ≥32 | |
+
+**הפניה:** Baron-Cohen et al. (2001). The Autism-Spectrum Quotient (AQ): Evidence from Asperger Syndrome/High-Functioning Autism, Males and Females, Scientists and Mathematicians. *Journal of Autism and Developmental Disorders*, 31(1), 5–17.
 """)
     elif q_code == "IRI":
         st.markdown("""
@@ -1667,7 +2086,10 @@ def screen_client():
         unsafe_allow_html=True,
     )
 
-    responses, all_answered = render_questionnaire_client(q, q_key)
+    if q.get("clinician_mode"):
+        responses, all_answered = render_questionnaire_clinician(q, q_key)
+    else:
+        responses, all_answered = render_questionnaire_client(q, q_key)
 
     st.markdown("")  # spacer
 
@@ -1678,12 +2100,15 @@ def screen_client():
 
     if st.button(button_label, type="primary", use_container_width=True):
         if not all_answered:
-            unanswered = [
-                item["number"]
-                for item in q["items"]
-                if item["number"] not in responses
-            ]
-            st.error(f"יש לענות על כל הפריטים. פריטים חסרים: {unanswered}")
+            if q.get("clinician_mode"):
+                st.error("יש להשלים את כל השדות הנדרשים בראיון.")
+            else:
+                unanswered = [
+                    item["number"]
+                    for item in q["items"]
+                    if item["number"] not in responses
+                ]
+                st.error(f"יש לענות על כל הפריטים. פריטים חסרים: {unanswered}")
         else:
             st.session_state.all_responses[q_key] = responses
             st.session_state.current_q_index = idx + 1
@@ -2007,7 +2432,37 @@ def _export_session_pdf(session):
         if "clinical_note" in results:
             _w(f"הערה קלינית: {results['clinical_note']}", size=9, bold=True)
         if "behavior_summary" in results:
-            _w(f"התנהגות: {results['behavior_summary']}", size=9)
+            _w(f"התנהגות (לאחרונה): {results['behavior_summary']}", size=9)
+        # C-SSRS lifetime fields
+        if "ideation_level_lifetime" in results:
+            _w(f"מחשבות אובדניות (חיים): {results['ideation_level_lifetime']}/5 — "
+               f"{results.get('ideation_description_lifetime', '')}", size=11)
+        if "behavior_summary_lifetime" in results:
+            _w(f"התנהגות אובדנית (חיים): {results['behavior_summary_lifetime']}", size=9)
+        if results.get("attempt_count_recent"):
+            _w(f"מספר ניסיונות (לאחרונה): {results['attempt_count_recent']}", size=9)
+        if results.get("attempt_count_lifetime"):
+            _w(f"מספר ניסיונות (חיים): {results['attempt_count_lifetime']}", size=9)
+        if results.get("lethality") is not None:
+            _w(f"תוצאה קטלנית: {results['lethality']}/5 — "
+               f"{results.get('lethality_description', '')}", size=9)
+        if results.get("intensity_total"):
+            _w(f"עוצמת מחשבות (לאחרונה): {results['intensity_total']}/25", size=9)
+        if results.get("intensity_total_lifetime"):
+            _w(f"עוצמת מחשבות (חיים): {results['intensity_total_lifetime']}/25", size=9)
+
+        # ---- AQ-specific: cutoff comparison ----
+        if q_code == "AQ":
+            total_aq = results.get("total", 0)
+            pdf.ln(1)
+            _w("ציוני סף:", size=10, bold=True)
+            for cutoff_name, threshold in [
+                ("ישראל — Golan & Milua (2006)", 22),
+                ("יפן / אנגליה — Kurita et al. (2005)", 26),
+                ("UK מקורי — Baron-Cohen et al. (2001)", 32),
+            ]:
+                status = "מעל הסף" if total_aq >= threshold else "מתחת לסף"
+                _w(f"  {cutoff_name} (≥{threshold}): {status}", size=9)
 
         # ---- Subscale scores summary ----
         subscales = results.get("subscales", {})
@@ -2016,9 +2471,12 @@ def _export_session_pdf(session):
             _w("תת-סולמות:", size=10, bold=True)
             for sub_name, sub_val in subscales.items():
                 if isinstance(sub_val, dict):
-                    parts = [f"{k}: {v}" for k, v in sub_val.items()
-                             if k not in ("items",)]
-                    _w(f"  {sub_name} — {', '.join(parts)}", size=9)
+                    if q_code == "AQ":
+                        _w(f"  {sub_name}: {sub_val.get('score', '')}/10", size=9)
+                    else:
+                        parts = [f"{k}: {v}" for k, v in sub_val.items()
+                                 if k not in ("items",)]
+                        _w(f"  {sub_name} — {', '.join(parts)}", size=9)
                 else:
                     _w(f"  {sub_name}: {sub_val}", size=9)
 
