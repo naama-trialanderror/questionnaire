@@ -145,14 +145,14 @@ ITEMS = [
             "**הגדרה:** ניסיון אובדני שהופסק על ידי גורם **חיצוני** (לא על ידי האדם עצמו) "
             "בתחילת פעולה של פגיעה עצמית.\n\n"
             "**דוגמאות:** גלולות ביד אך נמנע מלבלוע; אקדח מכוון לעצמו אך ניטל; עומד לקפוץ אך תפסו.\n\n"
-            "**הבדל מניסיון שנזנב:** כאן גורם חיצוני עצר — לא האדם עצמו.\n\n"
+            "**הבדל מניסיון שנזנח:** כאן גורם חיצוני עצר — לא האדם עצמו.\n\n"
             "**שאלות מוצעות:**\n"
             "• האם קרה שהתחלת לבצע משהו כדי לשים קץ לחייך, אך מישהו/משהו עצר בעדך?"
         ),
     },
     {
         "number": 8,
-        "text": "ניסיון שנזנב",
+        "text": "ניסיון שנזנח",
         "section": "התנהגות אובדנית",
         "guidance": (
             "**הגדרה:** ניסיון שהאדם **עצמו** הפסיק בטרם ביצע פעולה של פגיעה עצמית "
@@ -168,7 +168,7 @@ ITEMS = [
         "guidance": (
             "**הגדרה:** הכנות לקראת ביצוע ניסיון — כל דבר מעבר לביטויים מילוליים ומחשבות: "
             "עיבוד שיטה, איסוף אמצעים, כתיבת מכתב פרידה, חלוקת טובין.\n\n"
-            "**חשוב:** יש למנות רק פעולות **שלא הובילו** לניסיונות בפועל/שסוכלו/שנזנבו.\n\n"
+            "**חשוב:** יש למנות רק פעולות **שלא הובילו** לניסיונות בפועל/שסוכלו/שנזנחו.\n\n"
             "**שאלות מוצעות:**\n"
             "• האם נקטת צעדים לקראת ביצוע ניסיון? האם איספת כדורים, קנית אקדח, "
             "מסרת דברי ערך, כתבת מכתב פרידה?"
@@ -371,7 +371,7 @@ def score(responses):
         results["interpretation"] = "מחשבות אובדניות ברמת חומרה גבוהה ו/או פעולות הכנה — נדרשת הערכה קלינית דחופה"
     elif ideation_level >= 3 or interrupted_attempt or aborted_attempt:
         results["severity"] = "בינוני-חמור"
-        results["interpretation"] = "מחשבות אובדניות עם שיטה ו/או ניסיונות שסוכלו/נזנבו — נדרשת הערכה קלינית"
+        results["interpretation"] = "מחשבות אובדניות עם שיטה ו/או ניסיונות שסוכלו/נזנחו — נדרשת הערכה קלינית"
     elif ideation_level >= 1:
         results["severity"] = "בינוני"
         results["interpretation"] = "דווח על מחשבות אובדניות — יש לבחון בראיון קליני"
@@ -396,7 +396,7 @@ def score(responses):
     if interrupted_attempt:
         behaviors_recent.append("ניסיון שסוכל")
     if aborted_attempt:
-        behaviors_recent.append("ניסיון שנזנב")
+        behaviors_recent.append("ניסיון שנזנח")
     if preparatory_behavior:
         behaviors_recent.append("פעולות הכנה")
     if non_suicidal_self_injury:
@@ -410,7 +410,7 @@ def score(responses):
     if interrupted_attempt_l:
         behaviors_lifetime.append("ניסיון שסוכל")
     if aborted_attempt_l:
-        behaviors_lifetime.append("ניסיון שנזנב")
+        behaviors_lifetime.append("ניסיון שנזנח")
     if preparatory_behavior_l:
         behaviors_lifetime.append("פעולות הכנה")
     if nssi_l:

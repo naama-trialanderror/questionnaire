@@ -785,34 +785,54 @@ def render_questionnaire_clinician(q, q_key):
 
         st.markdown("")  # spacer
 
-    # ── Compute all_answered ─────────────────────────────────────────
-    all_answered = True
+    # ── Compute all_answered + missing labels ────────────────────────
+    item_labels = {item["number"]: item["text"] for item in q["items"]}
+    missing = []
 
-    # Items 1-2: required in both timeframes
     for num in [1, 2]:
-        if responses.get(num) is None or responses.get(f"{num}_l") is None:
-            all_answered = False
+        name = item_labels.get(num, f"שאלה {num}")
+        if responses.get(num) is None:
+            missing.append(f"שאלה {num} ({name}) — לאחרונה")
+        if responses.get(f"{num}_l") is None:
+            missing.append(f"שאלה {num} ({name}) — במהלך החיים")
 
-    # Items 3-5: required only if any ideation in 1-2
     if show_345:
         for num in [3, 4, 5]:
-            if responses.get(num) is None or responses.get(f"{num}_l") is None:
-                all_answered = False
+            name = item_labels.get(num, f"שאלה {num}")
+            if responses.get(num) is None:
+                missing.append(f"שאלה {num} ({name}) — לאחרונה")
+            if responses.get(f"{num}_l") is None:
+                missing.append(f"שאלה {num} ({name}) — במהלך החיים")
 
-    # Intensity: required when ideation is present
     if any_ideation_r:
         for iitem in q["intensity_items"]:
             if responses.get(iitem["number"]) is None:
-                all_answered = False
+                missing.append(f"עוצמה: {iitem['text']} — לאחרונה")
     if any_ideation_l:
         for iitem in q["intensity_items"]:
             if responses.get(f"{iitem['number']}_l") is None:
-                all_answered = False
+                missing.append(f"עוצמה: {iitem['text']} — במהלך החיים")
 
-    # Behavior items 6-10: required in both timeframes
     for num in [6, 7, 8, 9, 10]:
-        if responses.get(num) is None or responses.get(f"{num}_l") is None:
-            all_answered = False
+        name = item_labels.get(num, f"שאלה {num}")
+        if responses.get(num) is None:
+            missing.append(f"שאלה {num} ({name}) — לאחרונה")
+        if responses.get(f"{num}_l") is None:
+            missing.append(f"שאלה {num} ({name}) — במהלך החיים")
+
+    all_answered = len(missing) == 0
+
+    # Show live missing-fields indicator
+    if missing:
+        st.markdown("---")
+        st.markdown(
+            '<div style="background:#fff8e1;border:1px solid #f59e0b;border-radius:8px;'
+            'padding:0.7rem 1rem;margin-top:0.5rem;">'
+            '<strong>שדות שעוד לא מולאו:</strong><ul style="margin:0.3rem 0 0 0;padding-right:1.2rem;">'
+            + "".join(f"<li>{m}</li>" for m in missing)
+            + "</ul></div>",
+            unsafe_allow_html=True,
+        )
 
     return responses, all_answered
 
@@ -2060,6 +2080,60 @@ def screen_setup():
 
 
 # ============================================================
+# DEMO / AUTOFILL HELPER
+# ============================================================
+
+def _autofill_demo(q, q_key):
+    """Fill all session-state widget keys with representative demo values."""
+    if q.get("clinician_mode"):
+        # C-SSRS demo: passive ideation recently, more history lifetime; no behavior
+        st.session_state[f"clinician_{q_key}_source"] = "ראיון עם הנבדק/ת"
+        st.session_state[f"clinician_{q_key}_months"] = 3
+        # Ideation items (1-5): recent col / lifetime col
+        demo_ideation = {1: (1, 1), 2: (1, 1), 3: (0, 1), 4: (0, 0), 5: (0, 0)}
+        for num, (val_r, val_l) in demo_ideation.items():
+            st.session_state[f"clinician_{q_key}_{num}_r"] = val_r
+            st.session_state[f"clinician_{q_key}_{num}_l"] = val_l
+        # Intensity items: middle value for both timeframes
+        for iitem in q.get("intensity_items", []):
+            inum = iitem["number"]
+            opts = sorted(iitem["labels"].keys())
+            mid = opts[len(opts) // 2]
+            st.session_state[f"clinician_{q_key}_{inum}_r"] = mid
+            st.session_state[f"clinician_{q_key}_{inum}_l"] = mid
+        # Behavior items 6-10: all No
+        for num in range(6, 11):
+            st.session_state[f"clinician_{q_key}_{num}_r"] = 0
+            st.session_state[f"clinician_{q_key}_{num}_l"] = 0
+    else:
+        scale_min = q["scale_min"]
+        scale_max = q["scale_max"]
+        mid = (scale_min + scale_max) // 2
+        for item in q["items"]:
+            num = item["number"]
+            if "labels" in item:
+                opts = sorted(item["labels"].keys())
+                val = opts[len(opts) // 2]
+            elif "alt_scale" in item:
+                opts = sorted(item["alt_scale"].keys())
+                val = opts[len(opts) // 2]
+            else:
+                val = mid
+            st.session_state[f"client_{q_key}_{num}"] = val
+            # PQ-B distress: skip (only appears for endorsed items)
+        # Intensity items (non-clinician C-SSRS — not used, but defensive)
+        for iitem in q.get("intensity_items", []):
+            inum = iitem["number"]
+            opts = sorted(iitem["labels"].keys())
+            st.session_state[f"client_{q_key}_{inum}"] = opts[len(opts) // 2]
+        # EAT-26 behavioral items
+        b_mid = ((q.get("behavioral_scale_min", 0) + q.get("behavioral_scale_max", 0)) // 2
+                 if q.get("behavioral_items") else 0)
+        for bitem in q.get("behavioral_items", []):
+            st.session_state[f"client_{q_key}_{bitem['number']}"] = b_mid
+
+
+# ============================================================
 # SCREEN 2: CLIENT FILLING
 # ============================================================
 
@@ -2086,6 +2160,13 @@ def screen_client():
         unsafe_allow_html=True,
     )
 
+    # ── Demo autofill ──────────────────────────────────────────────
+    with st.expander("🔍 מצב בדיקה — מילוי אוטומטי", expanded=False):
+        st.caption("ממלא את השאלון בערכים לדוגמה כדי לראות את הניתוח והעיצוב במהירות.")
+        if st.button("מלא אוטומטית", key=f"autofill_{q_key}_{idx}"):
+            _autofill_demo(q, q_key)
+            st.rerun()
+
     if q.get("clinician_mode"):
         responses, all_answered = render_questionnaire_clinician(q, q_key)
     else:
@@ -2101,7 +2182,7 @@ def screen_client():
     if st.button(button_label, type="primary", use_container_width=True):
         if not all_answered:
             if q.get("clinician_mode"):
-                st.error("יש להשלים את כל השדות הנדרשים בראיון.")
+                st.error("יש להשלים את כל השדות הנדרשים — ראה רשימת השדות החסרים למעלה.")
             else:
                 unanswered = [
                     item["number"]
