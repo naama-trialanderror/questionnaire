@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import random
 from datetime import datetime
 from glob import glob
 
@@ -156,6 +157,13 @@ st.markdown(
         border-radius: 12px;
         background: linear-gradient(135deg, #fde8e8, #fce4ec);
         border: 1px solid #e57373;
+        margin: 0.8rem 0;
+    }
+    .good-box {
+        padding: 1rem 1.2rem;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #e8f5e9, #f0faf0);
+        border: 1px solid #81c784;
         margin: 0.8rem 0;
     }
 
@@ -532,7 +540,9 @@ def render_questionnaire_clinician(q, q_key):
 
     Returns (responses, all_answered) matching the render_questionnaire_client signature.
     """
-    from questionnaires.cssrs import LETHALITY_LABELS, LETHALITY_POTENTIAL_LABELS
+    from questionnaires.cssrs import LETHALITY_LABELS, LETHALITY_POTENTIAL_LABELS, NSSI_ITEM
+
+    submit_attempted = st.session_state.get(f"submit_attempted_{q_key}", False)
 
     st.markdown(
         '<div style="background:#fde8e8;border:2px solid #e74c3c;border-radius:10px;'
@@ -541,6 +551,9 @@ def render_questionnaire_clinician(q, q_key):
         'המאבחן/ת מנהל/ת את הראיון ומתעד/ת את התשובות.</div>',
         unsafe_allow_html=True,
     )
+
+    # Placeholder: filled at the END with missing-fields banner (only after submit attempt)
+    missing_banner = st.empty()
 
     responses = {}
 
@@ -561,49 +574,123 @@ def render_questionnaire_clinician(q, q_key):
         )
         responses["months"] = int(months)
 
-    st.info(
-        "השאלות הן **הצעות לגישוש בלבד** — ניתן להתאים את הניסוח כל עוד "
-        "מוערכים כל סוגי המחשבות וההתנהגויות."
-    )
-
-    # Helper: render a single Yes/No item with two columns (recent | lifetime)
-    def _render_yn_item(num, item, months_val):
-        """Render one Yes/No item with guidance expander and two timeframe columns."""
-        label_recent = f"ב-{months_val} חודשים האחרונים"
-        label_lifetime = "במהלך החיים"
-
-        guidance = item.get("guidance", "")
+    # ── Helper: render a single Yes/No item ─────────────────────────
+    def _render_yn_item(num, item, months_val, key_prefix=None):
+        """
+        Render one Yes/No item:
+          - definition inline (gray block)
+          - questions inline (bullet list)
+          - notes in expander (optional)
+          - recent | lifetime columns
+          - free text after "כן"
+        """
+        kp = key_prefix or str(num)
+        definition = item.get("definition", "")
+        questions = item.get("questions", [])
+        notes = item.get("notes", "")
         item_name = item["text"]
 
-        st.markdown(f"**{num}. {item_name}**")
-        if guidance:
-            with st.expander("הגדרה קלינית ושאלות מוצעות"):
-                st.markdown(guidance)
+        if key_prefix:
+            st.markdown(f"**{item_name}**")
+        else:
+            st.markdown(f"**{num}. {item_name}**")
+
+        if definition:
+            st.markdown(
+                f'<div style="background:#f8f9fa;border-right:3px solid #6c63ff;'
+                f'border-radius:6px;padding:0.5rem 0.8rem;margin:0.3rem 0 0.4rem 0;'
+                f'color:#444;font-size:0.9rem;line-height:1.6;">{definition}</div>',
+                unsafe_allow_html=True,
+            )
+
+        if questions:
+            q_html = "".join(f"<li>{q_text}</li>" for q_text in questions)
+            st.markdown(
+                f'<div style="background:#eef2ff;border-radius:6px;padding:0.45rem 0.8rem;'
+                f'margin:0.2rem 0 0.5rem 0;font-size:0.88rem;color:#333;">'
+                f'<strong>שאלות מוצעות:</strong>'
+                f'<ul style="margin:0.25rem 0 0 0;padding-right:1.2rem;">{q_html}</ul>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        if notes:
+            with st.expander("הערות נוספות"):
+                st.markdown(notes)
 
         col_r, col_l = st.columns(2)
         with col_r:
-            st.markdown(f"*{label_recent}*")
+            st.markdown(f"*ב-{months_val} חודשים האחרונים*")
             val_r = st.radio(
-                f"recent_{num}",
+                f"recent_{kp}",
                 options=[0, 1],
                 format_func=lambda x: "כן" if x == 1 else "לא",
-                key=f"clinician_{q_key}_{num}_r",
+                key=f"clinician_{q_key}_{kp}_r",
                 index=None,
                 label_visibility="collapsed",
                 horizontal=True,
             )
+            if val_r == 1:
+                desc_r = st.text_area(
+                    "אם כן, נא לתאר:",
+                    key=f"clinician_{q_key}_{kp}_desc_r",
+                    height=70,
+                    label_visibility="visible",
+                )
+                if desc_r:
+                    responses[f"{kp}_desc_r"] = desc_r
         with col_l:
-            st.markdown(f"*{label_lifetime}*")
+            st.markdown("*במהלך החיים*")
             val_l = st.radio(
-                f"lifetime_{num}",
+                f"lifetime_{kp}",
                 options=[0, 1],
                 format_func=lambda x: "כן" if x == 1 else "לא",
-                key=f"clinician_{q_key}_{num}_l",
+                key=f"clinician_{q_key}_{kp}_l",
                 index=None,
                 label_visibility="collapsed",
                 horizontal=True,
             )
+            if val_l == 1:
+                desc_l = st.text_area(
+                    "אם כן, נא לתאר:",
+                    key=f"clinician_{q_key}_{kp}_desc_l",
+                    height=70,
+                    label_visibility="visible",
+                )
+                if desc_l:
+                    responses[f"{kp}_desc_l"] = desc_l
+
         return val_r, val_l
+
+    # ── Helper: render one lethality block ──────────────────────────
+    def _render_lethality(label, suffix):
+        leth_labels = q.get("lethality_labels", LETHALITY_LABELS)
+        leth_options = sorted(leth_labels.keys())
+        st.markdown(f"**{label} — נזק רפואי (0-5):**")
+        leth_val = st.radio(
+            f"lethality_{suffix}",
+            options=leth_options,
+            format_func=lambda x, ll=leth_labels: ll[x],
+            key=f"clinician_{q_key}_lethality_{suffix}",
+            index=None,
+            label_visibility="collapsed",
+        )
+        if leth_val is not None:
+            responses[f"lethality_{suffix}"] = leth_val
+            if leth_val == 0:
+                st.markdown("**פוטנציאל קטלני (0-2) — מכיוון שנזק = 0:**")
+                pot_labels = q.get("lethality_potential_labels", LETHALITY_POTENTIAL_LABELS)
+                pot_options = sorted(pot_labels.keys())
+                pot_val = st.radio(
+                    f"lethality_{suffix}_potential",
+                    options=pot_options,
+                    format_func=lambda x, pl=pot_labels: pl[x],
+                    key=f"clinician_{q_key}_lethality_{suffix}_potential",
+                    index=None,
+                    label_visibility="collapsed",
+                )
+                if pot_val is not None:
+                    responses[f"lethality_{suffix}_potential"] = pot_val
 
     # ── PART A: Suicidal Ideation ────────────────────────────────────
     st.markdown("---")
@@ -633,7 +720,7 @@ def render_questionnaire_clinician(q, q_key):
     if val_2l is not None:
         responses["2_l"] = val_2l
 
-    # Branching logic
+    # Branching
     any_ideation_12_r = responses.get(1, 0) == 1 or responses.get(2, 0) == 1
     any_ideation_12_l = responses.get("1_l", 0) == 1 or responses.get("2_l", 0) == 1
     show_345 = any_ideation_12_r or any_ideation_12_l
@@ -671,6 +758,14 @@ def render_questionnaire_clinician(q, q_key):
             "*העריך/י לגבי **סוג המחשבות החמורות ביותר** שהיו לאדם — "
             "בתקופה האחרונה ובמהלך החיים:*"
         )
+
+        worst_desc = st.text_input(
+            "תיאור סוג המחשבה החמורה ביותר שמדורגת:",
+            key=f"clinician_{q_key}_intensity_worst_desc",
+            placeholder="לדוגמה: מחשבות על נטילת כדורים עם כוונה מסוימת",
+        )
+        if worst_desc:
+            responses["intensity_worst_desc"] = worst_desc
 
         for iitem in q["intensity_items"]:
             inum = iitem["number"]
@@ -731,61 +826,87 @@ def render_questionnaire_clinician(q, q_key):
             responses[f"{num}_l"] = vl
 
         # Attempt counts (items 6-9)
-        if num <= 9:
-            show_count_r = responses.get(num, 0) == 1
-            show_count_l = responses.get(f"{num}_l", 0) == 1
-            if show_count_r or show_count_l:
-                cnt_col_r, cnt_col_l = st.columns(2)
-                with cnt_col_r:
-                    if show_count_r:
-                        cnt_r = st.number_input(
-                            f"מספר אירועים (ב-{months} חודשים)",
-                            min_value=1, max_value=100, value=1, step=1,
-                            key=f"clinician_{q_key}_{num}_count_r",
-                        )
-                        responses[f"{num}_count"] = int(cnt_r)
-                with cnt_col_l:
-                    if show_count_l:
-                        cnt_l = st.number_input(
-                            "מספר אירועים (כל החיים)",
-                            min_value=1, max_value=100, value=1, step=1,
-                            key=f"clinician_{q_key}_{num}_count_l",
-                        )
-                        responses[f"{num}_count_l"] = int(cnt_l)
-
-        # Lethality rating (item 6 only)
-        if num == 6 and (responses.get(6, 0) == 1 or responses.get("6_l", 0) == 1):
-            st.markdown("**דירוג תוצאה קטלנית / נזק רפואי (0-5):**")
-            leth_labels = q.get("lethality_labels", LETHALITY_LABELS)
-            leth_options = sorted(leth_labels.keys())
-            lethality = st.radio(
-                "lethality_rating",
-                options=leth_options,
-                format_func=lambda x, ll=leth_labels: ll[x],
-                key=f"clinician_{q_key}_lethality",
-                index=None,
-                label_visibility="collapsed",
-            )
-            if lethality is not None:
-                responses["lethality"] = lethality
-                if lethality == 0:
-                    st.markdown("**פוטנציאל קטלני (0-2) — מכיוון שנזק = 0:**")
-                    pot_labels = q.get("lethality_potential_labels", LETHALITY_POTENTIAL_LABELS)
-                    pot_options = sorted(pot_labels.keys())
-                    leth_pot = st.radio(
-                        "lethality_potential",
-                        options=pot_options,
-                        format_func=lambda x, pl=pot_labels: pl[x],
-                        key=f"clinician_{q_key}_lethality_potential",
-                        index=None,
-                        label_visibility="collapsed",
+        show_count_r = responses.get(num, 0) == 1
+        show_count_l = responses.get(f"{num}_l", 0) == 1
+        if show_count_r or show_count_l:
+            cnt_col_r, cnt_col_l = st.columns(2)
+            with cnt_col_r:
+                if show_count_r:
+                    cnt_r = st.number_input(
+                        f"מספר אירועים (ב-{months} חודשים)",
+                        min_value=1, max_value=100, value=1, step=1,
+                        key=f"clinician_{q_key}_{num}_count_r",
                     )
-                    if leth_pot is not None:
-                        responses["lethality_potential"] = leth_pot
+                    responses[f"{num}_count"] = int(cnt_r)
+            with cnt_col_l:
+                if show_count_l:
+                    cnt_l = st.number_input(
+                        "מספר אירועים (כל החיים)",
+                        min_value=1, max_value=100, value=1, step=1,
+                        key=f"clinician_{q_key}_{num}_count_l",
+                    )
+                    responses[f"{num}_count_l"] = int(cnt_l)
+
+        # Item 6 extras: dates + three lethality codes
+        if num == 6 and (show_count_r or show_count_l):
+            st.markdown(
+                '<div style="background:#fff3e0;border-right:3px solid #e67e22;'
+                'border-radius:6px;padding:0.6rem 0.9rem;margin:0.5rem 0;">'
+                '<strong>פרטים נוספים על הניסיונות בפועל:</strong></div>',
+                unsafe_allow_html=True,
+            )
+
+            # Dates
+            d_col1, d_col2, d_col3 = st.columns(3)
+            with d_col1:
+                d_last = st.text_input(
+                    "תאריך ניסיון אחרון",
+                    key=f"clinician_{q_key}_attempt_last_date",
+                    placeholder="ד/מ/שנה",
+                )
+                if d_last:
+                    responses["attempt_last_date"] = d_last
+            with d_col2:
+                d_lethal = st.text_input(
+                    "תאריך ניסיון קטלני ביותר",
+                    key=f"clinician_{q_key}_attempt_lethal_date",
+                    placeholder="ד/מ/שנה",
+                )
+                if d_lethal:
+                    responses["attempt_lethal_date"] = d_lethal
+            with d_col3:
+                d_first = st.text_input(
+                    "תאריך ניסיון ראשון",
+                    key=f"clinician_{q_key}_attempt_first_date",
+                    placeholder="ד/מ/שנה",
+                )
+                if d_first:
+                    responses["attempt_first_date"] = d_first
+
+            # Three lethality codes
+            leth_col1, leth_col2, leth_col3 = st.columns(3)
+            with leth_col1:
+                _render_lethality("ניסיון אחרון", "last")
+            with leth_col2:
+                _render_lethality("ניסיון קטלני ביותר", "lethal")
+            with leth_col3:
+                _render_lethality("ניסיון ראשון", "first")
 
         st.markdown("")  # spacer
 
-    # ── Compute all_answered + missing labels ────────────────────────
+    # ── NSSI (separate inquiry at end of Part B) ─────────────────────
+    st.markdown(
+        '<div class="subscale-header" style="background-color:#7f8c8d;">'
+        'פגיעה עצמית שאיננה אובדנית (NSSI)</div>',
+        unsafe_allow_html=True,
+    )
+    nssi_vr, nssi_vl = _render_yn_item("nssi", NSSI_ITEM, months, key_prefix="nssi")
+    if nssi_vr is not None:
+        responses["nssi_r"] = nssi_vr
+    if nssi_vl is not None:
+        responses["nssi_l"] = nssi_vl
+
+    # ── Compute all_answered + missing list ──────────────────────────
     item_labels = {item["number"]: item["text"] for item in q["items"]}
     missing = []
 
@@ -807,32 +928,37 @@ def render_questionnaire_clinician(q, q_key):
     if any_ideation_r:
         for iitem in q["intensity_items"]:
             if responses.get(iitem["number"]) is None:
-                missing.append(f"עוצמה: {iitem['text']} — לאחרונה")
+                missing.append(f"עוצמה: {iitem['text'].split('—')[0].strip()} — לאחרונה")
     if any_ideation_l:
         for iitem in q["intensity_items"]:
             if responses.get(f"{iitem['number']}_l") is None:
-                missing.append(f"עוצמה: {iitem['text']} — במהלך החיים")
+                missing.append(f"עוצמה: {iitem['text'].split('—')[0].strip()} — במהלך החיים")
 
-    for num in [6, 7, 8, 9, 10]:
+    for num in [6, 7, 8, 9]:
         name = item_labels.get(num, f"שאלה {num}")
         if responses.get(num) is None:
             missing.append(f"שאלה {num} ({name}) — לאחרונה")
         if responses.get(f"{num}_l") is None:
             missing.append(f"שאלה {num} ({name}) — במהלך החיים")
 
+    if responses.get("nssi_r") is None:
+        missing.append("NSSI — לאחרונה")
+    if responses.get("nssi_l") is None:
+        missing.append("NSSI — במהלך החיים")
+
     all_answered = len(missing) == 0
 
-    # Show live missing-fields indicator
-    if missing:
-        st.markdown("---")
-        st.markdown(
-            '<div style="background:#fff8e1;border:1px solid #f59e0b;border-radius:8px;'
-            'padding:0.7rem 1rem;margin-top:0.5rem;">'
-            '<strong>שדות שעוד לא מולאו:</strong><ul style="margin:0.3rem 0 0 0;padding-right:1.2rem;">'
-            + "".join(f"<li>{m}</li>" for m in missing)
-            + "</ul></div>",
-            unsafe_allow_html=True,
-        )
+    # Fill the placeholder banner — only after a failed submit attempt
+    if submit_attempted and missing:
+        with missing_banner.container():
+            st.markdown(
+                '<div class="warning-box">'
+                '<strong>שדות חסרים — יש להשלים לפני הגשה:</strong>'
+                '<ul style="margin:0.4rem 0 0 0;padding-right:1.2rem;">'
+                + "".join(f"<li>{m}</li>" for m in missing)
+                + "</ul></div>",
+                unsafe_allow_html=True,
+            )
 
     return responses, all_answered
 
@@ -925,8 +1051,23 @@ def _render_visual_items(q_module, raw, results):
     subscale_map, subscale_order = _get_subscale_map(q_module)
     mid = (scale_min + scale_max) / 2
 
-    # Build item lookup
-    item_by_num = {item["number"]: item for item in items}
+    # AQ scoring direction lookup
+    aq_agree: set = set()
+    aq_disagree: set = set()
+    if q_module.get("code") == "AQ":
+        try:
+            from questionnaires.aq import AGREE_ITEMS, DISAGREE_ITEMS
+            aq_agree = AGREE_ITEMS
+            aq_disagree = DISAGREE_ITEMS
+        except ImportError:
+            pass
+
+    def _score_dir(num):
+        if num in aq_agree:
+            return "agree"
+        if num in aq_disagree:
+            return "disagree"
+        return None
 
     if subscale_map and subscale_order:
         # Render grouped by subscale
@@ -943,7 +1084,8 @@ def _render_visual_items(q_module, raw, results):
             )
             for item in sub_items:
                 _render_single_item(item, raw, scale_min, scale_max, scale_range,
-                                    mid, reversed_items, scale_labels, sub_color)
+                                    mid, reversed_items, scale_labels, sub_color,
+                                    scoring_direction=_score_dir(item["number"]))
                 assigned.add(item["number"])
 
         # Render any unassigned items
@@ -955,7 +1097,8 @@ def _render_visual_items(q_module, raw, results):
             )
             for item in unassigned:
                 _render_single_item(item, raw, scale_min, scale_max, scale_range,
-                                    mid, reversed_items, scale_labels, "#888")
+                                    mid, reversed_items, scale_labels, "#888",
+                                    scoring_direction=_score_dir(item["number"]))
     else:
         # No subscales — render all items flat with section grouping if available
         current_section = None
@@ -968,7 +1111,8 @@ def _render_visual_items(q_module, raw, results):
                     unsafe_allow_html=True,
                 )
             _render_single_item(item, raw, scale_min, scale_max, scale_range,
-                                mid, reversed_items, scale_labels, "#4a90d9")
+                                mid, reversed_items, scale_labels, "#4a90d9",
+                                scoring_direction=_score_dir(item["number"]))
 
     # PQ-B distress followup display
     if q_module.get("has_distress_followup"):
@@ -1073,7 +1217,8 @@ def _severity_bar_color(val, scale_min, scale_max, mid):
 
 
 def _render_single_item(item, raw, scale_min, scale_max, scale_range,
-                         mid, reversed_items, scale_labels, sub_color):
+                         mid, reversed_items, scale_labels, sub_color,
+                         scoring_direction=None):
     """Render a single questionnaire item as a visual row."""
     num = item["number"]
     val_raw = raw.get(str(num), None)
@@ -1105,10 +1250,17 @@ def _render_single_item(item, raw, scale_min, scale_max, scale_range,
     bar_color = _severity_bar_color(effective, scale_min, scale_max, mid) if val is not None else "#ccc"
     rev_tag = '<span class="item-rev-tag">↩ הפוך</span>' if is_rev else ""
 
+    # AQ scoring direction tag
+    dir_tag = ""
+    if scoring_direction == "agree":
+        dir_tag = '<span class="item-rev-tag" style="background:#dbeafe;color:#1e40af;">✓ הסכמה</span>'
+    elif scoring_direction == "disagree":
+        dir_tag = '<span class="item-rev-tag" style="background:#fce7f3;color:#9d174d;">✗ אי-הסכמה</span>'
+
     st.markdown(
         f'<div class="item-row {row_class}">'
         f'<span class="item-num">{num}.</span>'
-        f'<span class="item-txt">{item["text"]} {rev_tag}</span>'
+        f'<span class="item-txt">{item["text"]} {rev_tag}{dir_tag}</span>'
         f'<span class="item-val" style="background:{sub_color};color:#fff;">{val_display}</span>'
         f'<div class="item-bar">'
         f'<div class="item-bar-fill" style="width:{pct}%;background:{bar_color};"></div>'
@@ -1506,6 +1658,17 @@ def render_dashboard_results(q_code, q_data):
             unsafe_allow_html=True,
         )
 
+        st.markdown(
+            '<div class="results-box" style="font-size:0.88rem;">'
+            '<strong>כיוון ציון:</strong> פריטי <span style="background:#dbeafe;'
+            'color:#1e40af;padding:0.1rem 0.4rem;border-radius:4px;">✓ הסכמה</span> '
+            'מדורגים אוטומטית — הסכמה מצביעה על מאפיין אוטיסטי. '
+            'פריטי <span style="background:#fce7f3;color:#9d174d;padding:0.1rem 0.4rem;'
+            'border-radius:4px;">✗ אי-הסכמה</span> מהופכים — אי-הסכמה מצביעה על מאפיין אוטיסטי. '
+            'כל הפריטים כבר ניקודם נכון בציון הכולל.</div>',
+            unsafe_allow_html=True,
+        )
+
         # Cutoff comparison — all three validation studies
         st.markdown("**השוואה לציוני סף:**")
         for cutoff_name, threshold in [
@@ -1514,8 +1677,8 @@ def render_dashboard_results(q_code, q_data):
             ("UK מקורי — Baron-Cohen et al. (2001)", 32),
         ]:
             above = total >= threshold
-            box_class = "warning-box" if above else "results-box"
-            status = "✓ מעל הסף" if above else "✗ מתחת לסף"
+            box_class = "severe-box" if above else "good-box"
+            status = "מעל הסף" if above else "מתחת לסף"
             st.markdown(
                 f'<div class="{box_class}">'
                 f'{cutoff_name} (≥{threshold}): <strong>{status}</strong>'
@@ -2058,6 +2221,13 @@ def screen_setup():
 
     st.markdown("---")
 
+    test_mode = st.checkbox(
+        "מצב בדיקה — אפשר מילוי אוטומטי בשאלון",
+        value=False,
+        key="test_mode_checkbox",
+        help="כשמסומן, יופיע כפתור מילוי אוטומטי בשאלון. לשימוש פנימי בלבד — אל תאפשר/י בפגישה עם מטופל/ת.",
+    )
+
     col1, col2 = st.columns([2, 1])
     with col1:
         if st.button("התחל מפגש", type="primary", use_container_width=True):
@@ -2070,6 +2240,7 @@ def screen_setup():
                 st.session_state.selected_questionnaires = selected
                 st.session_state.current_q_index = 0
                 st.session_state.all_responses = {}
+                st.session_state.test_mode = test_mode
                 st.session_state.screen = "client"
                 st.rerun()
 
@@ -2084,53 +2255,59 @@ def screen_setup():
 # ============================================================
 
 def _autofill_demo(q, q_key):
-    """Fill all session-state widget keys with representative demo values."""
+    """Fill all session-state widget keys with random demo values."""
     if q.get("clinician_mode"):
-        # C-SSRS demo: passive ideation recently, more history lifetime; no behavior
-        st.session_state[f"clinician_{q_key}_source"] = "ראיון עם הנבדק/ת"
-        st.session_state[f"clinician_{q_key}_months"] = 3
-        # Ideation items (1-5): recent col / lifetime col
-        demo_ideation = {1: (1, 1), 2: (1, 1), 3: (0, 1), 4: (0, 0), 5: (0, 0)}
-        for num, (val_r, val_l) in demo_ideation.items():
-            st.session_state[f"clinician_{q_key}_{num}_r"] = val_r
-            st.session_state[f"clinician_{q_key}_{num}_l"] = val_l
-        # Intensity items: middle value for both timeframes
+        # C-SSRS: randomise ideation level, keep behavior items as No
+        st.session_state[f"clinician_{q_key}_source"] = random.choice(
+            ["ראיון עם הנבדק/ת", "בני/ות משפחה", "שניהם — נבדק/ת ומשפחה"]
+        )
+        st.session_state[f"clinician_{q_key}_months"] = random.choice([1, 3, 6])
+
+        # Random ideation level 1-3 recent, lifetime >= recent
+        ideation_r = random.randint(1, 3)
+        ideation_l = min(5, ideation_r + random.randint(0, 2))
+        for num in range(1, 6):
+            st.session_state[f"clinician_{q_key}_{num}_r"] = 1 if num <= ideation_r else 0
+            st.session_state[f"clinician_{q_key}_{num}_l"] = 1 if num <= ideation_l else 0
+
+        # Intensity items: random values from options
         for iitem in q.get("intensity_items", []):
             inum = iitem["number"]
             opts = sorted(iitem["labels"].keys())
-            mid = opts[len(opts) // 2]
-            st.session_state[f"clinician_{q_key}_{inum}_r"] = mid
-            st.session_state[f"clinician_{q_key}_{inum}_l"] = mid
-        # Behavior items 6-10: all No
-        for num in range(6, 11):
+            st.session_state[f"clinician_{q_key}_{inum}_r"] = random.choice(opts)
+            st.session_state[f"clinician_{q_key}_{inum}_l"] = random.choice(opts)
+
+        # Behavior items 6-9: all No (safe demo default)
+        for num in range(6, 10):
             st.session_state[f"clinician_{q_key}_{num}_r"] = 0
             st.session_state[f"clinician_{q_key}_{num}_l"] = 0
+        # NSSI: No
+        st.session_state[f"clinician_{q_key}_nssi_r"] = 0
+        st.session_state[f"clinician_{q_key}_nssi_l"] = 0
     else:
         scale_min = q["scale_min"]
         scale_max = q["scale_max"]
-        mid = (scale_min + scale_max) // 2
         for item in q["items"]:
             num = item["number"]
             if "labels" in item:
                 opts = sorted(item["labels"].keys())
-                val = opts[len(opts) // 2]
+                val = random.choice(opts)
             elif "alt_scale" in item:
                 opts = sorted(item["alt_scale"].keys())
-                val = opts[len(opts) // 2]
+                val = random.choice(opts)
             else:
-                val = mid
+                val = random.randint(scale_min, scale_max)
             st.session_state[f"client_{q_key}_{num}"] = val
-            # PQ-B distress: skip (only appears for endorsed items)
-        # Intensity items (non-clinician C-SSRS — not used, but defensive)
+        # Intensity items (defensive, non-clinician path)
         for iitem in q.get("intensity_items", []):
             inum = iitem["number"]
             opts = sorted(iitem["labels"].keys())
-            st.session_state[f"client_{q_key}_{inum}"] = opts[len(opts) // 2]
+            st.session_state[f"client_{q_key}_{inum}"] = random.choice(opts)
         # EAT-26 behavioral items
-        b_mid = ((q.get("behavioral_scale_min", 0) + q.get("behavioral_scale_max", 0)) // 2
-                 if q.get("behavioral_items") else 0)
+        b_min = q.get("behavioral_scale_min", 0)
+        b_max = q.get("behavioral_scale_max", 0)
         for bitem in q.get("behavioral_items", []):
-            st.session_state[f"client_{q_key}_{bitem['number']}"] = b_mid
+            st.session_state[f"client_{q_key}_{bitem['number']}"] = random.randint(b_min, b_max)
 
 
 # ============================================================
@@ -2160,12 +2337,13 @@ def screen_client():
         unsafe_allow_html=True,
     )
 
-    # ── Demo autofill ──────────────────────────────────────────────
-    with st.expander("🔍 מצב בדיקה — מילוי אוטומטי", expanded=False):
-        st.caption("ממלא את השאלון בערכים לדוגמה כדי לראות את הניתוח והעיצוב במהירות.")
-        if st.button("מלא אוטומטית", key=f"autofill_{q_key}_{idx}"):
-            _autofill_demo(q, q_key)
-            st.rerun()
+    # ── Demo autofill (therapist test mode only — never shown to patient) ──
+    if st.session_state.get("test_mode", False):
+        with st.expander("מצב בדיקה — מילוי אוטומטי", expanded=False):
+            st.caption("ממלא את השאלון בערכים אקראיים לדוגמה.")
+            if st.button("מלא אוטומטית", key=f"autofill_{q_key}_{idx}"):
+                _autofill_demo(q, q_key)
+                st.rerun()
 
     if q.get("clinician_mode"):
         responses, all_answered = render_questionnaire_clinician(q, q_key)
@@ -2182,7 +2360,8 @@ def screen_client():
     if st.button(button_label, type="primary", use_container_width=True):
         if not all_answered:
             if q.get("clinician_mode"):
-                st.error("יש להשלים את כל השדות הנדרשים — ראה רשימת השדות החסרים למעלה.")
+                st.session_state[f"submit_attempted_{q_key}"] = True
+                st.rerun()
             else:
                 unanswered = [
                     item["number"]
@@ -2191,6 +2370,7 @@ def screen_client():
                 ]
                 st.error(f"יש לענות על כל הפריטים. פריטים חסרים: {unanswered}")
         else:
+            st.session_state.pop(f"submit_attempted_{q_key}", None)
             st.session_state.all_responses[q_key] = responses
             st.session_state.current_q_index = idx + 1
             st.rerun()
