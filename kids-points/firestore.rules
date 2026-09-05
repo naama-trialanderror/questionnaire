@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // רק שתי כתובות המייל האלה יכולות לקרוא ולכתוב. החליפו לכתובות ה-Google שלכם.
+    function isParent() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'PARENT1@gmail.com',
+          'PARENT2@gmail.com'
+        ];
+    }
+    match /families/{doc} {
+      allow read, write: if isParent();
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
